@@ -1,0 +1,136 @@
+---
+title: ATProject
+output: pdf_document
+---
+```{r echo=FALSE, message=FALSE}
+library(forecast)
+library(ggpubr)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(gmodels)
+library(openxlsx)
+library(survival)
+library(survminer)
+library(knitr)
+library(readxl)
+library(gridExtra)
+library(DiagrammeR)
+library(stringr)
+library(janitor)
+library(caret)
+library(data.table)
+```
+# Test on lung cancer data
+
+```{r}
+#setup pipeline
+setwd("C:\\Users\\annat\\Documents\\CCRI_II")
+genedat <- fread("erasmusgene.csv", sep = ",", header=TRUE)
+clinicaldat <- fread("erasmusclinical.csv",  header=TRUE) 
+
+clinicaldat <- subset(clinicaldat, select = c(sample.ID, DMFS_10Y_EVENT))
+```
+
+```{r}
+genedat <- t(genedat)
+genedat <- as.data.frame(genedat)
+colnames(genedat) <- as.character(unlist(genedat[1,])) 
+genedat$sample.ID <- row.names(genedat) 
+
+genedat <- genedat[-(1:2),]  
+genedat <- genedat%>% relocate(sample.ID) 
+
+genedat[,2:22284] <- apply(genedat[,2:22284],2,as.numeric)
+genedat[,2:22284] <- apply(genedat[,2:22284],2,scale)
+
+genedat <- genedat[, which(colMeans(!is.na(genedat)) > 0.2)]  #remove columns that have more than 20% of data missing 
+fulldata <- merge(genedat, clinicaldat, by = "sample.ID")
+
+change <- ifelse(fulldata$DMFS_10Y_EVENT =="DistantMetastasisFree","No",ifelse(fulldata$DMFS_10Y_EVENT =="DistantMetastasis","Yes",NA))
+fulldata$DMFS_10Y_EVENT <- change
+
+```
+
+```{r}
+#run wilcox ALL
+fulldata <- fulldata %>% arrange(fulldata$DMFS_10Y_EVENT)
+
+DMFS_10Y_EVENT <- subset(fulldata, select=DMFS_10Y_EVENT)
+
+fulldata <- subset(fulldata, select=-c(DMFS_10Y_EVENT, sample.ID))
+
+#arrange dataset by outcome variable 
+fulldata <- apply(fulldata, 2, as.numeric) #ensure all the features are numeric 
+
+fulldata<- as.data.frame(cbind(fulldata, DMFS_10Y_EVENT))
+rm(DMFS_10Y_EVENT)
+
+```
+
+```{r}
+
+pValuesall.wilcox.erb <- apply(fulldata[,1:22283], 2, function(x) wilcox.test(x[1:178],x[179:285])$p.value) #run wilcox in patients with and without recurerbce 
+pValuesall.wilcox.erb
+pValuesall.wilcox.erb <- as.data.frame(pValuesall.wilcox.erb) #convert wilcox result into a dataframe 
+write.csv(pValuesall.wilcox.erb, "pValuesall.wilcox.erb.csv") #save the result 
+
+reduced <- pValuesall.wilcox.erb %>% filter(pValuesall.wilcox.erb< 0.05) #filter genes that have a p<0.05
+list <- c(row.names(reduced),"DMFS_10Y_EVENT") #create a list of gene names and the outcome variable 
+reducedwilcox <- fulldata[, names(fulldata) %in% list] #filter the merged clinical and genomic dataset from line 30 by the list created above 
+
+```
+
+```{r}
+##Run SVM 
+
+set.seed(123)
+reducedwilcox <-reducedwilcox[, which(colMeans(!is.na(reducedwilcox)) > 0.001)]
+reducedwilcox <- na.omit(reducedwilcox)
+reducedwilcox_split <-
+
+
+createDataPartition(reducedwilcox$DMFS_10Y_EVENT, p = .8,                                    list = FALSE, 
+                                  times= 1)
+train <- reducedwilcox[ reducedwilcox_split,]
+test  <- reducedwilcox[-reducedwilcox_split,]
+
+svmwilcox<- train(DMFS_10Y_EVENT ~ ., data = train, 
+                 method = "svmLinear", 
+                 trControl = trainControl(## 10-fold CV
+                           method = "cv",
+                           number = 10), 
+                           ## repeated ten times
+                      )
+svmwilcox 
+
+test$DMFS_10Y_EVENT  <- factor(test$DMFS_10Y_EVENT , levels = c("Yes", "No"))
+test_pred <- predict(svmwilcox , newdata = test)
+confusionMatrix(test_pred, test$DMFS_10Y_EVENT)
+
+#recursive feature selection
+
+rf <- reducedwilcox[,1:3369]
+rf <- as.data.frame(fs)
+
+rfe_control = rfeControl(
+                     method="cv",
+                     number=5)
+
+fit_control = trainControl(classProbs=F,
+                        search="random")
+
+
+relapse <- as.factor(reducedwilcox$DMFS_10Y_EVENT)
+                    
+rfe_fit = rfe(fs, relapse,
+             sizes = c(10,20,30,40,50,60,70,80,90,100,250,500,750,1000),
+             rfeControl = rfe_control,
+             method="svmLinear",
+             trControl=fit_control,
+             scale=FALSE)
+
+
+trellis.par.set(caretTheme())
+plot(rfe_fit, type = c("g", "o")) # plot accuracies 
+```
